@@ -1,66 +1,78 @@
 import { Injectable } from '@angular/core';
-import { HttpRequest, HttpHandler, HttpResponse, HttpEvent, HttpInterceptor } from '@angular/common/http';
+import {
+  HttpRequest,
+  HttpHandler,
+  HttpResponse,
+  HttpEvent,
+  HttpInterceptor,
+} from '@angular/common/http';
 import { Observable, throwError, catchError, switchMap } from 'rxjs';
 import { AuthService } from '../services/auth.service';
 import { Router } from '@angular/router';
 
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {
-
-  private isRefreshing: boolean = false; // Para evitar bucles infinitos
+  private isRefreshingToken = false;
 
   constructor(private authService: AuthService, private router: Router) {}
 
   intercept(request: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    // Obtener el token del AuthService
+    // Skip interception for login requests
     if (request.url.includes('/login')) {
       return next.handle(request);
     }
-    const token = this.authService.getToken();
-    console.log('Interceptando petición:', request.url);
-    console.log('Token actual:', token);
-    //Añadimos el header Authorization si hay token
-    if (token) {
-      request = request.clone({
-        setHeaders: {
-          Authorization: `Bearer ${token}`
-        }
+
+    const currentToken = this.authService.getToken();
+    console.log('Intercepting request:', request.url);
+    console.log('Current access token:', currentToken);
+
+    // Add Authorization header if an access token exists
+    let modifiedRequest = request;
+    if (currentToken) {
+      modifiedRequest = request.clone({
+        setHeaders: { Authorization: `Bearer ${currentToken}` },
       });
-      console.log('Token añadido a la petición:', request);
+      console.log('Authorization header added');
     }
-    return next.handle(request).pipe(
-      catchError((error: HttpResponse<any>) => {
-        //Si el token expiró, intentamos refrescarlo
-        if ((error.status === 403 || error.status === 401) && !this.isRefreshing) {
-          console.log('Token expirado, intentando refrescar...');  
-          this.isRefreshing = true;
+
+    return next.handle(modifiedRequest).pipe(
+      catchError((errorResponse: HttpResponse<any>) => {
+        // Handle token expiration
+        if (errorResponse.status === 401 && !this.isRefreshingToken) {
+          console.log('Access token expired, attempting to refresh');
+          this.isRefreshingToken = true;
 
           return this.authService.refreshToken().pipe(
-            switchMap((res: any) => {
-              console.log('Token refrescado:', res);
-              this.isRefreshing = false;
-              const newToken = res.token;
-              localStorage.setItem('token', newToken);
+            switchMap((refreshResponse: any) => {
+              console.log('Access token refreshed successfully');
+              this.isRefreshingToken = false;
 
-              // Reintentar la petición original con el nuevo token
-              const retryReq = request.clone({
-                setHeaders: {
-                  Authorization: `Bearer ${newToken}`
-                }
+              const newAccessToken = refreshResponse.token;
+              localStorage.setItem('token', newAccessToken);
+
+              const retriedRequest = modifiedRequest.clone({
+                setHeaders: { Authorization: `Bearer ${newAccessToken}` },
               });
-              console.log('Reintentando petición con nuevo token:', retryReq);
-              return next.handle(retryReq);
+              console.log('Retrying request with refreshed token');
+              return next.handle(retriedRequest);
             }),
-            catchError(err => {
-              console.log('No se pudo refrescar el token, redirigiendo al login.', err);
-              this.isRefreshing = false;
-              this.authService.logout();
-              return throwError(() => err);
+            catchError(refreshError => {
+              if (refreshError.status === 401) {
+                console.warn('Could not refresh token. Redirecting to login.');
+                this.isRefreshingToken = false;
+                this.authService.logout();
+              }
+              return throwError(() => refreshError);
             })
           );
         }
 
-        return throwError(() => error);
+        // Handle forbidden access
+        if (errorResponse.status === 403) {
+          console.warn('Access forbidden (403)');
+        }
+
+        return throwError(() => errorResponse);
       })
     );
   }

@@ -18,74 +18,77 @@ export interface LoginResponse {
   refreshToken: string;
 }
 
-@Injectable({
-  providedIn: 'root'
-})
+@Injectable({ providedIn: 'root' })
 export class AuthService {
-  private apiUrl = 'http://localhost:3000/api';
-  private currentUserSubject = new BehaviorSubject<User | null>(null);
-  public currentUser$ = this.currentUserSubject.asObservable();
+  private readonly apiUrl = 'http://localhost:3000/api';
+  private userState = new BehaviorSubject<User | null>(null);
+  public user$ = this.userState.asObservable();
 
   constructor(private http: HttpClient, private router: Router) {
-    // Verificar si hay un usuario en localStorage al inicializar
-    const savedUser = localStorage.getItem('currentUser');
-  if (savedUser && savedUser !== 'undefined') {
-  try {
-    this.currentUserSubject.next(JSON.parse(savedUser));
-  } catch (e) {
-    console.error('Error parsing saved user:', e);
-    localStorage.removeItem('currentUser'); // Eliminar si está corrupto
+    // Loads the user from localStorage if it exists
+    const storedUserData = localStorage.getItem('currentUser');
+    if (storedUserData && storedUserData !== 'undefined') {
+      try {
+        this.userState.next(JSON.parse(storedUserData));
+      } catch (error) {
+        console.error('Error parsing stored user:', error);
+        localStorage.removeItem('currentUser');
+      }
+    }
   }
-}
 
-  }
-
+  // Authenticates a user and stores the returned tokens
   login(username: string, password: string): Observable<LoginResponse> {
-    return this.http.post<LoginResponse>(`${this.apiUrl}/user/login`, {username, password}).pipe(
+    return this.http.post<LoginResponse>(`${this.apiUrl}/user/login`, { username, password }).pipe(
       tap(response => {
-        const userData = (response as any).User;
-        if (userData) {
-          localStorage.setItem('currentUser', JSON.stringify(userData));
+        const loggedUser = (response as any).User;
+        if (loggedUser) {
+          localStorage.setItem('currentUser', JSON.stringify(loggedUser));
           localStorage.setItem('token', response.token);
-          localStorage.setItem('refreshToken',response.refreshToken);
-          this.currentUserSubject.next(userData);
-
+          localStorage.setItem('refreshToken', response.refreshToken);
+          this.userState.next(loggedUser);
         }
       })
     );
   }
 
+  // Logs out the current user and clears local storage
   logout(): void {
     localStorage.removeItem('currentUser');
     localStorage.removeItem('token');
     localStorage.removeItem('refreshToken');
-    this.currentUserSubject.next(null);
+    this.userState.next(null);
     this.router.navigate(['/login']);
-    
   }
 
+  // Returns the current logged-in user
   getCurrentUser(): User | null {
-    return this.currentUserSubject.value;
+    return this.userState.value;
   }
 
+  // Checks whether there is a logged-in user
   isLoggedIn(): boolean {
-    return !!this.currentUserSubject.value;
+    return !!this.userState.value;
   }
 
-  // Método para crear admin (solo desarrollo)
-  createAdminUser(): Observable<any> {
-    return this.http.post(`${this.apiUrl}/user/auth/create-admin`, {});
-  }
+  // Returns the stored JWT access token
   getToken(): string | null {
     return localStorage.getItem('token');
   }
+
+  // Requests a new access token using a refresh token
   refreshToken(): Observable<any> {
-    const refreshToken = localStorage.getItem('refreshToken');
-    const currentUser = localStorage.getItem('currentUser');
-    if (!refreshToken || !currentUser) {
+    const storedRefreshToken = localStorage.getItem('refreshToken');
+    const storedUserData = localStorage.getItem('currentUser');
+
+    if (!storedRefreshToken || !storedUserData) {
       throw new Error('No refresh token or current user found');
     }
-    const user = JSON.parse(currentUser);
-    return this.http.post(`${this.apiUrl}/user/refresh`, { refreshToken, userId: user._id });
+
+    const parsedUser = JSON.parse(storedUserData);
+    return this.http.post(`${this.apiUrl}/user/refresh`, {
+      refreshToken: storedRefreshToken,
+      userId: parsedUser._id,
+    });
   }
 }
